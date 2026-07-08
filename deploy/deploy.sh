@@ -4,7 +4,7 @@
 set -euo pipefail
 
 # ===== 改成你的 =====
-SERVER="root@SERVER_IP"          # 服务器登录：用户@公网IP，例如 root@1.2.3.4
+SERVER="root@69.5.21.175"        # 服务器登录：用户@公网IP，例如 root@1.2.3.4
 REMOTE_DIR="/var/www/ai-board"   # 服务器上的站点目录（与 nginx.conf 里的 root 一致）
 # ===================
 

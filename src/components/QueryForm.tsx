@@ -8,14 +8,26 @@ const STORAGE_KEY = 'ainowork_token_key'
 
 type RangeValue = [Dayjs | null, Dayjs | null] | null
 
-// 快捷查询区间（含今天，days 为天数）
-const QUICK_RANGES = [
-  { label: '今天', days: 1 },
-  { label: '近三天', days: 3 },
-  { label: '近七天', days: 7 },
+type QuickRange = {
+  id: string
+  label: string
+  /** 构造区间 [start, end]（均含今天） */
+  build: () => [Dayjs, Dayjs]
+}
+
+const buildRange = (days: number): [Dayjs, Dayjs] => [
+  dayjs().subtract(days - 1, 'day'),
+  dayjs(),
 ]
 
-const buildRange = (days: number): RangeValue => [dayjs().subtract(days - 1, 'day'), dayjs()]
+// 快捷查询区间（均含今天）。「当月/近三十天」超过 7 天，会自动分段多次请求。
+const QUICK_RANGES: QuickRange[] = [
+  { id: 'today', label: '今天', build: () => buildRange(1) },
+  { id: '3d', label: '近三天', build: () => buildRange(3) },
+  { id: '7d', label: '近七天', build: () => buildRange(7) },
+  { id: 'thisMonth', label: '当月', build: () => [dayjs().startOf('month'), dayjs()] },
+  { id: 'last30', label: '近三十天', build: () => [dayjs().subtract(29, 'day'), dayjs()] },
+]
 
 interface Props {
   loading: boolean
@@ -26,8 +38,6 @@ export default function QueryForm({ loading, onQuery }: Props) {
   const [apiKey, setApiKey] = useState('')
   const [remember, setRemember] = useState(false)
   const [range, setRange] = useState<RangeValue>([dayjs().subtract(6, 'day'), dayjs()])
-  // 选择过程中的临时值，用于把可选区间限制在 7 天内
-  const [picking, setPicking] = useState<RangeValue>(null)
 
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY)
@@ -38,12 +48,9 @@ export default function QueryForm({ loading, onQuery }: Props) {
   }, [])
 
   const disabledDate = (current: Dayjs) => {
-    // 不能晚于今天，不能早于 30 天前（接口限制）
+    // 不能晚于今天，不能早于 30 天前（实测接口允许的范围）
     if (current > dayjs().endOf('day')) return true
     if (current < dayjs().subtract(30, 'day').startOf('day')) return true
-    // 选择中：与已选端点相距超过 6 天（即区间 > 7 天）的日期不可选
-    const anchor = picking?.[0] ?? picking?.[1] ?? null
-    if (anchor && Math.abs(current.diff(anchor, 'day')) > 6) return true
     return false
   }
 
@@ -60,22 +67,23 @@ export default function QueryForm({ loading, onQuery }: Props) {
   const handleQuery = () => runQuery(range)
 
   // 点击快捷按钮：直接设置区间并立即查询（用 next 而非 state，避免 setState 异步取到旧值）
-  const handleQuick = (days: number) => {
-    const next = buildRange(days)
+  const handleQuick = (build: () => [Dayjs, Dayjs]) => {
+    const next = build()
     setRange(next)
     runQuery(next)
   }
 
-  // 当前区间命中的快捷天数（截止今天、起点匹配才算选中），用于高亮按钮
-  const activeQuick = QUICK_RANGES.find(({ days }) => {
+  // 当前区间命中的快捷项（两端均与某项 build() 同日才算选中），用于高亮按钮
+  const activeQuick = QUICK_RANGES.find(({ build }) => {
     const [start, end] = range ?? [null, null]
+    const [bs, be] = build()
     return (
       start != null &&
       end != null &&
-      end.isSame(dayjs(), 'day') &&
-      start.isSame(dayjs().subtract(days - 1, 'day'), 'day')
+      start.isSame(bs, 'day') &&
+      end.isSame(be, 'day')
     )
-  })?.days
+  })?.id
 
   return (
     <Card>
@@ -91,13 +99,13 @@ export default function QueryForm({ loading, onQuery }: Props) {
         />
         <Space wrap size="middle">
           <Space.Compact>
-            {QUICK_RANGES.map(({ label, days }) => (
+            {QUICK_RANGES.map(({ id, label, build }) => (
               <Button
-                key={days}
-                type={activeQuick === days ? 'primary' : 'default'}
-                loading={loading && activeQuick === days}
+                key={id}
+                type={activeQuick === id ? 'primary' : 'default'}
+                loading={loading && activeQuick === id}
                 disabled={!apiKey.trim()}
-                onClick={() => handleQuick(days)}
+                onClick={() => handleQuick(build)}
               >
                 {label}
               </Button>
@@ -106,9 +114,7 @@ export default function QueryForm({ loading, onQuery }: Props) {
           <RangePicker
             value={range}
             disabledDate={disabledDate}
-            onCalendarChange={(val) => setPicking(val as RangeValue)}
             onChange={(val) => setRange(val as RangeValue)}
-            onOpenChange={(open) => setPicking(open ? [null, null] : null)}
             allowClear
           />
           <Checkbox checked={remember} onChange={(e) => setRemember(e.target.checked)}>
@@ -126,7 +132,8 @@ export default function QueryForm({ loading, onQuery }: Props) {
         </Space>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           Key 仅保存在你的浏览器本地，直接请求官方接口，不经任何第三方；勾选「记住 Key」会写入
-          localStorage（公共电脑请勿勾选）。查询区间 ≤7 天，起始不早于 30 天前；不选区间则默认最近 7 天。
+          localStorage（公共电脑请勿勾选）。查询区间起始不早于 30 天前；超过 7 天的区间会自动分段
+          多次请求；不选区间则默认最近 7 天。
         </Typography.Text>
       </Space>
     </Card>
