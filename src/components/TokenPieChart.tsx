@@ -2,10 +2,13 @@ import { Card, Empty } from 'antd'
 import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
 import type { TokenBreakdown } from '../types'
 import { formatNumber } from '../utils/format'
+import { chartColor } from '@/icons/tokens'
+import { useReducedMotion } from '@/hooks/useReducedMotion'
 
-const COLORS = ['#1677ff', '#52c41a', '#faad14', '#eb2f96']
+const COLORS = [chartColor.input, chartColor.output, chartColor.cacheRead, chartColor.cacheWrite]
 
 export default function TokenPieChart({ tokens }: { tokens: TokenBreakdown }) {
+  const reduced = useReducedMotion()
   const data = [
     { name: '输入', value: tokens.input },
     { name: '输出', value: tokens.output },
@@ -18,26 +21,27 @@ export default function TokenPieChart({ tokens }: { tokens: TokenBreakdown }) {
       {data.length === 0 ? (
         <Empty description="暂无 Token 数据" style={{ padding: 48 }} />
       ) : (
-        <ResponsiveContainer width="100%" height={300}>
-          <PieChart>
-            <Pie
-              data={data}
-              dataKey="value"
-              nameKey="name"
-              innerRadius={60}
-              outerRadius={100}
-              paddingAngle={2}
-            >
-              {data.map((_, i) => (
-                <Cell key={i} fill={COLORS[i % COLORS.length]} />
-              ))}
-            </Pie>
-            <Tooltip
-              formatter={(v: any, name: any) => [formatNumber(Number(v)), name]}
-            />
-            <Legend />
-          </PieChart>
-        </ResponsiveContainer>
+        <div role="img" aria-label="Token 类型占比环形图">
+          <ResponsiveContainer width="100%" height={300}>
+            <PieChart>
+              <Pie
+                data={data}
+                dataKey="value"
+                nameKey="name"
+                innerRadius={60}
+                outerRadius={100}
+                paddingAngle={2}
+                isAnimationActive={!reduced}
+              >
+                {data.map((_, i) => (
+                  <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                ))}
+              </Pie>
+              <Tooltip formatter={(v, name) => [formatNumber(Number(v)), name]} />
+              <Legend />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
       )}
     </Card>
   )

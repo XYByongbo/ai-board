@@ -10,6 +10,13 @@ import type {
 /** 官方接口基础域名（文档：https://nf.ainowork.ai/docs/getting-started/api-keys） */
 const BASE_URL = 'https://hk.ainowork.ai'
 
+/** 单次请求超时（毫秒）。超时按瞬时故障重试。 */
+const REQUEST_TIMEOUT_MS = 15_000
+/** 429 / 5xx 最大重试次数（不含首次） */
+const MAX_RETRIES = 2
+/** 重试退避基准（指数退避：base × 2^(attempt-1)），单位毫秒 */
+const RETRY_BASE_DELAY_MS = 800
+
 /**
  * 查询单个 Key 的每日 Token 消耗。
  * 接口已开启 CORS（access-control-allow-origin: *），浏览器可直接请求，无需后端代理。
@@ -24,41 +31,87 @@ export async function fetchTokenCost(
   startDate?: string,
   endDate?: string,
 ): Promise<TokenCostResponse> {
+  return requestTokenCost(apiKey.trim(), startDate, endDate)
+}
+
+/**
+ * 底层请求：带超时（AbortController）、网络/5xx/429 有限重试（指数退避）。
+ * - 超时或网络故障：视为瞬时故障，重试 MAX_RETRIES 次后抛出友好错误。
+ * - 429 / 5xx：尊重 Retry-After，否则按指数退避重试。
+ * - 401 / 403：立即失败（凭证问题，重试无意义）。
+ */
+async function requestTokenCost(
+  apiKey: string,
+  startDate?: string,
+  endDate?: string,
+): Promise<TokenCostResponse> {
   const params = new URLSearchParams()
   if (startDate) params.set('start_date', startDate)
   if (endDate) params.set('end_date', endDate)
   const qs = params.toString()
   const url = `${BASE_URL}/api/usage/token/cost${qs ? `?${qs}` : ''}`
 
-  let res: Response
-  try {
-    res = await fetch(url, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${apiKey.trim()}` },
-    })
-  } catch {
-    throw new Error('网络请求失败，请检查网络连接后重试')
-  }
+  let attempt = 0
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
 
-  let body: TokenCostResponse | null = null
-  try {
-    body = (await res.json()) as TokenCostResponse
-  } catch {
-    // 响应体非 JSON，下面按状态码处理
-  }
-
-  if (!res.ok) {
-    if (res.status === 401 || res.status === 403) {
-      throw new Error('API Key 无效或无权限（HTTP ' + res.status + '）')
+    let res: Response
+    try {
+      res = await fetch(url, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: controller.signal,
+      })
+    } catch (err) {
+      clearTimeout(timer)
+      const isAbort =
+        controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')
+      const isNetErr = err instanceof TypeError // 网络层失败（无法连接 / CORS 等）
+      if ((isAbort || isNetErr) && attempt < MAX_RETRIES) {
+        attempt++
+        await delay(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1))
+        continue
+      }
+      if (isAbort) throw new Error('请求超时，请稍后重试')
+      throw new Error('网络请求失败，请检查网络连接后重试')
+    } finally {
+      clearTimeout(timer)
     }
-    throw new Error(body?.message || `请求失败（HTTP ${res.status}）`)
-  }
 
-  if (!body || !body.success || !body.data) {
-    throw new Error(body?.message || '接口返回数据异常')
-  }
+    // 可重试的服务端错误：429 限流 / 5xx 内部错误
+    if ((res.status === 429 || res.status >= 500) && attempt < MAX_RETRIES) {
+      attempt++
+      const retryAfter = Number(res.headers.get('Retry-After'))
+      const backoff =
+        Number.isFinite(retryAfter) && retryAfter > 0
+          ? retryAfter * 1000
+          : RETRY_BASE_DELAY_MS * 2 ** (attempt - 1)
+      await delay(backoff)
+      continue
+    }
 
-  return body
+    let body: TokenCostResponse | null = null
+    try {
+      body = (await res.json()) as TokenCostResponse
+    } catch {
+      // 响应体非 JSON，下面按状态码处理
+    }
+
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) {
+        throw new Error('API Key 无效或无权限（HTTP ' + res.status + '）')
+      }
+      throw new Error(body?.message || `请求失败（HTTP ${res.status}）`)
+    }
+
+    if (!body || !body.success || !body.data) {
+      throw new Error(body?.message || '接口返回数据异常')
+    }
+
+    return body
+  }
 }
 
 /** 单次查询区间上限（接口限制：约 7 天，超过则分段） */
@@ -92,7 +145,7 @@ async function mapWithConcurrency<T, R>(
  * 把大区间切成多个 ≤7 天、互不重叠的子区间。
  * cur 从 start 推进到 end，每段终点取「cur+6 天」与 end 的较早者，下一段从终点+1 天起。
  */
-function splitSubRanges(start: Dayjs, end: Dayjs): [Dayjs, Dayjs][] {
+export function splitSubRanges(start: Dayjs, end: Dayjs): [Dayjs, Dayjs][] {
   const segs: [Dayjs, Dayjs][] = []
   let cur = start
   while (!cur.isAfter(end, 'day')) {
@@ -119,7 +172,7 @@ const zeroTokens = (): TokenBreakdown => ({
  * - summary 的 quota/cost/request_count 与 tokens 各字段逐一累加
  * - start_date/end_date 用整体大区间，currency/token_name/object 取首段
  */
-function mergeResults(
+export function mergeResults(
   results: TokenCostData[],
   startDate: string,
   endDate: string,
@@ -129,9 +182,7 @@ function mergeResults(
   for (const r of results) {
     for (const p of r.periods) periodMap.set(p.date, p)
   }
-  const periods = Array.from(periodMap.values()).sort((a, b) =>
-    a.date.localeCompare(b.date),
-  )
+  const periods = Array.from(periodMap.values()).sort((a, b) => a.date.localeCompare(b.date))
 
   const summary: TokenCostSummary = {
     quota: 0,
@@ -187,4 +238,9 @@ export async function fetchTokenCostRange(
     return r.data
   })
   return mergeResults(results, startDate, endDate)
+}
+
+/** 简单的延时工具（用于重试退避） */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }

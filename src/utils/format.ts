@@ -15,10 +15,7 @@ export function formatCompact(n: number): string {
 /** 金额，如 ¥2,262.32 */
 export function formatCurrency(n: number, currency = 'CNY'): string {
   const symbol = currency === 'CNY' ? '¥' : currency === 'USD' ? '$' : ''
-  return (
-    symbol +
-    n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  )
+  return symbol + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
 /** '2026-06-19' -> '06-19' */

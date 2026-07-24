@@ -6,6 +6,14 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   base: '/board/',
+  resolve: {
+    // 团队统一路径别名：所有模块优先用 @/ 引用，便于代码审查与重构。
+    // 图标体系的唯一入口即 @/icons。
+    // 用 import.meta.url + URL 全局计算绝对路径，避免引入 @types/node 依赖。
+    alias: {
+      '@': new URL('./src', import.meta.url).pathname,
+    },
+  },
   build: {
     // 代码分割：把第三方库拆成独立 vendor chunk，浏览器可并行下载、长期缓存，减小首屏 JS 体积
     rollupOptions: {
